@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>IMA · PHP_UPGRADE_PROD · Desktop Dashboard (D3)</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    :root{ --ink:#0f172a; --muted:#64748b; --card:#ffffff; --border:#e9edf3; --bg:#f7f8fb; --brand:#6d5dfc; }
+    *{ box-sizing:border-box; font-family: ui-sans-serif, system-ui, Inter, Segoe UI, Roboto, Arial; }
+    body{ margin:0; background:var(--bg); color:var(--ink); }
+    header{ background:#fff; border-bottom:1px solid var(--border); padding:18px 24px; display:flex; align-items:center; justify-content:space-between; }
+    .title{ display:flex; gap:12px; align-items:center; }
+    .logo{ width:36px; height:36px; border-radius:12px; background:var(--brand); display:grid; place-items:center; color:#fff; font-weight:700; }
+    h1{ margin:0; font-size:20px; }
+    .subtitle{ color:var(--muted); font-size:12px; margin-top:2px; }
+
+    /* controls: Metric, Page Type, Date Range */
+    .controls{ background:#fff; border-bottom:1px solid var(--border); padding:14px 24px; display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+    label{ display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
+    select, input, button{ padding:10px 12px; border:1px solid #d9deea; border-radius:12px; background:#fff; font-size:14px; }
+    button.primary{ background:var(--brand); color:#fff; border:none; cursor:pointer; }
+
+    main{ padding:18px 24px; display:grid; grid-template-columns:1fr; gap:16px; }
+    .grid{ display:grid; gap:16px; }
+    .grid.kpis{ grid-template-columns:repeat(4,1fr); }
+    .grid.row{ grid-template-columns:2fr 1fr; }
+    .grid.row2{ grid-template-columns:1fr 1fr; }
+
+    .card{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:14px; }
+    .kpi{ display:flex; justify-content:space-between; align-items:center; }
+    .kpi .label{ color:var(--muted); font-size:12px; }
+    .kpi .value{ font-weight:700; font-size:22px; }
+    .kpi .delta.pos{ color:#059669; font-weight:600; }
+    .kpi .delta.neg{ color:#b91c1c; font-weight:600; }
+
+    #line,#hist,#pass{ width:100%; }
+    #line{ height:280px; }  /* smaller "Metric over time" */
+    #hist{ height:260px; }  /* slightly shorter histogram */
+    #pass{ height:280px; }
+
+    /* keep axis labels visible and tidy */
+    #hist svg, #line svg, #pass svg { overflow: visible; }
+    svg .tick text{ font-size:11px; fill:var(--muted); }
+    svg .domain, svg .tick line{ stroke:var(--border); }
+
+    .muted{ color:var(--muted); }
+    .tableWrap table{ width:100%; border-collapse:collapse; }
+    th,td{ border:1px solid var(--border); padding:8px 10px; font-size:13px; text-align:left; }
+    th{ background:#f8fafc; }
+
+    /* keep these inputs functional but hidden from UI */
+    .hidden{ display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">
+      <div class="logo">IM</div>
+      <div>
+        <h1>Performance Report (D3 desktop)</h1>
+        <div class="subtitle">Core Web Vitals & perf metrics for <strong>PHP_UPGRADE_PROD</strong> · Device fixed to <strong>Desktop</strong></div>
+      </div>
+    </div>
+  </header>
+
+  <section class="controls">
+    <label>Metric
+      <select id="metric">
+        <option value="performance">Performance</option>
+        <option value="lcp">LCP</option>
+        <option value="fcp">FCP</option>
+        <option value="inp">INP</option>
+        <option value="ttfb">TTFB</option>
+        <option value="cls">CLS</option>
+        <option value="speedIndex">Speed Index</option>
+        <option value="tbt" selected>TBT</option>
+      </select>
+    </label>
+
+    <label>Page type
+      <select id="pageType">
+        <option value="__all__" selected>All Page Types</option>
+      </select>
+    </label>
+
+    <label>Date range
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input id="from" type="date"/>
+        <span>to</span>
+        <input id="to" type="date"/>
+        <button id="load" class="primary">Load</button>
+      </div>
+    </label>
+
+    <!-- Hidden but preserved for loading logic -->
+    <input id="baseHost" class="hidden" type="text" value=""/>
+    <input id="pattern" class="hidden" type="text" value="php_upgrade_prod-lighthouse-average-10-22-2025-04-43-44 AM.json, php_upgrade_prod-lighthouse-average-10-23-2025-08-58-33 AM.json"/>
+  </section>
+
+  <main>
+    <div class="grid kpis">
+      <div class="card kpi">
+        <div>
+          <div class="label" id="kpiTitle">TBT — avg</div>
+          <div class="value" id="kpiAvg">—</div>
+        </div>
+        <!-- optional: keep a placeholder for a future metric-delta; or remove this <div> entirely -->
+        <div id="kpiDelta" class="delta muted">—</div>
+      </div>
+      
+      <div class="card kpi">
+        <div>
+          <div class="label">Pass rate (latest day)</div>
+          <div class="value" id="kpiPass">—</div>
+        </div>
+        <div id="kpiPassDelta" class="delta muted">—</div>
+      </div>      
+      <!-- <div class="card kpi"><div><div class="label" id="kpiTitle">TBT — avg</div><div class="value" id="kpiAvg">—</div></div><div id="kpiPassDelta" class="delta muted">—</div></div>
+      <div class="card kpi"><div><div class="label">Pass rate (latest day)</div><div class="value" id="kpiPass">—</div></div><div class="delta muted">vs prev</div></div> -->
+      <div class="card kpi"><div><div class="label">Environment</div><div class="value">PHP_UPGRADE_PROD</div></div><div class="muted">desktop</div></div>
+      <div class="card kpi"><div><div class="label">Range</div><div class="value" id="kpiRange">—</div></div><div class="muted" id="kpiDays">—</div></div>
+    </div>
+
+    <div class="grid row">
+      <div class="card">
+        <h3 style="margin:0 0 8px;" id="lineTitle">Metric over time (desktop)</h3>
+        <div id="line"></div>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 8px;">Distribution (latest day)</h3>
+        <div id="hist"></div>
+      </div>
+    </div>
+
+    <div class="grid row2">
+      <div class="card">
+        <h3 style="margin:0 0 8px;">Pass/Fail by day</h3>
+        <div id="pass"></div>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 8px;">Latest vs Previous (table)</h3>
+        <div class="tableWrap" id="table"></div>
+      </div>
+    </div>
+  </main>
+
+<script>
+// ---- metric defs & helpers ----
+const METRICS = [
+  { key:'performance', label:'Performance', unit:'',  good:'high', pass:v=>v>=0.90 || v>=90 },
+  { key:'lcp',         label:'LCP',         unit:'ms', good:'low',  pass:v=>v<=2500 },
+  { key:'fcp',         label:'FCP',         unit:'ms', good:'low',  pass:v=>v<=1800 },
+  { key:'inp',         label:'INP',         unit:'ms', good:'low',  pass:v=>v<=200 },
+  { key:'ttfb',        label:'TTFB',        unit:'ms', good:'low',  pass:v=>v<=800 },
+  { key:'cls',         label:'CLS',         unit:'',   good:'low',  pass:v=>v<=0.1 },
+  { key:'speedIndex',  label:'Speed Index', unit:'ms', good:'low',  pass:v=>v<=3400 },
+  { key:'tbt',         label:'TBT',         unit:'ms', good:'low',  pass:v=>v<=200 },
+];
+const M = Object.fromEntries(METRICS.map(m=>[m.key,m]));
+const labelOf = k => M[k].label + (M[k].unit?` (${M[k].unit})`:``);
+
+// display formatting
+const fmt = (k,v)=> v==null||!Number.isFinite(+v) ? '—'
+  : (k==='cls'? (+v).toFixed(3)
+     : (k==='performance' && +v<=1 ? (+v*100).toFixed(0) : (+v).toFixed(0)));
+
+const pct = (a,b)=> (Number.isFinite(b) && b!==0) ? ((a-b)/b)*100 : NaN;
+
+// normalize for table math (scale performance to 0..100 if needed)
+function normForTable(k,v){
+  if(!Number.isFinite(+v)) return NaN;
+  if(k==='performance' && +v<=1) return +v*100;
+  return +v;
+}
+
+// ---- IO ----
+const baseEl = document.getElementById('baseHost');
+const pattEl = document.getElementById('pattern');
+const fromEl = document.getElementById('from');
+const toEl   = document.getElementById('to');
+fromEl.value = '2025-10-22';
+toEl.value   = '2025-10-23';
+const metricEl = document.getElementById('metric');
+const pageTypeEl = document.getElementById('pageType');
+const loadBtn = document.getElementById('load');
+
+const kpiTitle = document.getElementById('kpiTitle');
+const kpiAvg = document.getElementById('kpiAvg');
+const kpiPass = document.getElementById('kpiPass');
+const kpiPassDelta = document.getElementById('kpiPassDelta');
+const kpiRange = document.getElementById('kpiRange');
+const kpiDays = document.getElementById('kpiDays');
+const lineDiv = document.getElementById('line');
+const histDiv = document.getElementById('hist');
+const passDiv = document.getElementById('pass');
+const tableDiv = document.getElementById('table');
+const lineTitle = document.getElementById('lineTitle');
+
+// ---- utils ----
+function joinUrl(base, path){
+  if(/^https?:\/\//i.test(path)) return path;
+  const baseUrl = (base && base.trim()) ? base.trim() : window.location.origin;
+  return baseUrl.replace(/\/$/,'') + (path.startsWith('/')?path:'/'+path);
+}
+async function getJSON(url){ const r=await fetch(url,{cache:'no-cache'}); if(!r.ok) throw new Error(url+': '+r.status); return r.json(); }
+function inferDates(from,to){ const arr=[]; const s=new Date(from); const e=new Date(to); for(let d=new Date(s); d<=e; d.setDate(d.getDate()+1)){ arr.push(d.toISOString().slice(0,10)); } return arr; }
+function isoToMDY(iso){ const [y,m,d]=iso.split('-'); return `${m}-${d}-${y}`; }
+function normalizePattern(p){ return p.trim().replace(/(\d{2}-\d{2}-\d{4})/g, '{MDY}'); }
+
+// ---- load multiple files per day ----
+async function loadRange(from,to){
+  const base = baseEl?.value?.trim() || '';
+  const patterns = pattEl.value.split(',').map(normalizePattern);
+  const dates = inferDates(from,to);
+  const all = [];
+
+  for(const dt of dates){
+    let dayRows = [];
+    const mdy = isoToMDY(dt);
+
+    for(const patt of patterns){
+      if(!(patt.includes('{DATE}') || patt.includes('{MDY}'))) continue;
+      const url = joinUrl(base, patt.replace('{DATE}', dt).replace('{MDY}', mdy));
+      try{
+        const rows = await getJSON(url);
+        dayRows = dayRows.concat(rows);
+      } catch(e){
+        console.warn('Skip', dt, url, e.message);
+      }
+    }
+    if(dayRows.length) all.push({date: dt, rows: dayRows});
+  }
+  return all;
+}
+
+// ---- aggregates ----
+function dayAverage(rows){
+  const out={};
+  METRICS.forEach(m=>{
+    let sum=0,c=0;
+    for(const r of rows){
+      const v=+r[m.key];
+      if(Number.isFinite(v)){ sum+=v; c++; }
+    }
+    out[m.key]= c? sum/c : NaN;
+  });
+  return out;
+}
+function passRate(rows, key){
+  const rule=M[key].pass; let pass=0,total=0;
+  for(const r of rows){
+    const v=+r[key];
+    if(Number.isFinite(v)){ total++; if(rule(v)) pass++; }
+  }
+  return total? Math.round((pass/total)*100) : NaN;
+}
+
+// ---- auto-populate Page Type (from data) & persist selection ----
+let lastSelectedPageType = '__all__';
+function populatePageTypeOptions(all){
+  const prev = lastSelectedPageType || pageTypeEl.value || '__all__';
+  const types = new Set();
+  all.forEach(d => d.rows.forEach(r => {
+    if (typeof r.pageType === 'string') {
+      const t = r.pageType.trim();
+      if (t) types.add(t);
+    }
+  }));
+  const options = ['<option value="__all__">All Page Types</option>',
+                   ...Array.from(types).sort().map(t=>`<option value="${t}">${t}</option>`)];
+  pageTypeEl.innerHTML = options.join('');
+  if (prev && (prev==='__all__' || types.has(prev))) {
+    pageTypeEl.value = prev;
+  } else {
+    pageTypeEl.value = '__all__';
+  }
+  lastSelectedPageType = pageTypeEl.value;
+}
+
+// ---- charts ----
+function renderLine(series, key){
+  lineDiv.replaceChildren();
+  const margin={top:10,right:20,bottom:48,left:54};
+  const width=lineDiv.clientWidth - margin.left - margin.right;
+  const height=lineDiv.clientHeight - margin.top - margin.bottom;
+  const svg=d3.select(lineDiv).append('svg')
+    .attr('width',width+margin.left+margin.right)
+    .attr('height',height+margin.top+margin.bottom);
+  const g=svg.append('g').attr('transform',`translate(${margin.left},${margin.top})`);
+  const x=d3.scaleBand().domain(series.map(d=>d.date)).range([0,width]).padding(0.2);
+  const y=d3.scaleLinear().domain([0, d3.max(series, d=>d.value)||1]).nice().range([height,0]);
+  g.append('g').attr('transform',`translate(0,${height})`).call(d3.axisBottom(x))
+    .selectAll('text').attr('transform','rotate(-30)').style('text-anchor','end');
+    g.append('g').call(d3.axisLeft(y).ticks(6));
+  const line=d3.line().x(d=> x(d.date)+x.bandwidth()/2).y(d=> y(d.value));
+  g.append('path').datum(series).attr('fill','none').attr('stroke','#6d5dfc').attr('stroke-width',2).attr('d',line);
+  g.selectAll('circle').data(series).enter().append('circle')
+    .attr('cx',d=> x(d.date)+x.bandwidth()/2).attr('cy',d=> y(d.value)).attr('r',3.5).attr('fill','#6d5dfc')
+    .append('title').text(d=> `${d.date}: ${d.value}`);
+}
+function renderHist(values, key){
+  histDiv.replaceChildren();
+
+  // tighter + cleaner margins (more bottom space for x labels)
+  const margin={top:10,right:20,bottom:40,left:48};
+  const width=histDiv.clientWidth - margin.left - margin.right;
+  const height=histDiv.clientHeight - margin.top - margin.bottom;
+
+  const svg=d3.select(histDiv).append('svg')
+    .attr('width',width+margin.left+margin.right)
+    .attr('height',height+margin.top+margin.bottom);
+
+  const g=svg.append('g').attr('transform',`translate(${margin.left},${margin.top})`);
+
+  const maxVal = d3.max(values) || 1;
+  const isSmall = maxVal <= 1.5;  // detect small metrics (0–1 like Performance/CLS)
+
+  // dynamic upper bound: 0–1 → round to next 0.1; big numbers → next 500
+  const upper = isSmall
+    ? Math.ceil(maxVal * 10) / 10
+    : Math.ceil(maxVal / 500) * 500;
+
+  const x = d3.scaleLinear()
+    .domain([0, upper])
+    .range([0, width]);
+
+  // For very small metrics (e.g., CLS), show ticks every 0.01 between 0 and 0.10
+  const verySmall = isSmall && upper <= 0.11;     // ~0 → 0.10 range
+  const step      = verySmall ? 0.01 : 0.1;
+  const fmtSmall  = d3.format(verySmall ? ".2f" : ".1f");
+
+  const xAxis = isSmall
+    ? d3.axisBottom(x)
+        .tickValues(d3.range(0, upper + step / 2, step)) // 0.00, 0.01, …, 0.10
+        .tickFormat(fmtSmall)
+    : d3.axisBottom(x).ticks(6);
+
+
+  const bins = d3.bin().domain(x.domain()).thresholds(20)(values);
+
+  const y = d3.scaleLinear()
+    .domain([0, d3.max(bins, d => d.length) || 1])
+    .nice()
+    .range([height, 0]);
+
+  g.append('g')
+    .attr('transform', `translate(0,${height})`)
+    .call(xAxis);
+
+
+  g.append('g')
+    .call(d3.axisLeft(y).ticks(6));
+
+  g.selectAll('rect').data(bins).join('rect')
+    .attr('x',d=>x(d.x0)+1)
+    .attr('y',d=>y(d.length))
+    .attr('width',d=>Math.max(0,x(d.x1)-x(d.x0)-1))
+    .attr('height',d=>height-y(d.length))
+    .attr('fill','#9fb3ff');
+}
+
+function renderPassBars(passSeries){
+  passDiv.replaceChildren();
+  const margin={top:10,right:20,bottom:40,left:48};
+  const width=passDiv.clientWidth - margin.left - margin.right;
+  const height=passDiv.clientHeight - margin.top - margin.bottom;
+  const svg=d3.select(passDiv).append('svg')
+    .attr('width',width+margin.left+margin.right)
+    .attr('height',height+margin.top+margin.bottom);
+  const g=svg.append('g').attr('transform',`translate(${margin.left},${margin.top})`);
+  const x=d3.scaleBand().domain(passSeries.map(d=>d.date)).range([0,width]).padding(0.2);
+  const y=d3.scaleLinear().domain([0,100]).range([height,0]);
+  g.append('g').attr('transform',`translate(0,${height})`).call(d3.axisBottom(x))
+    .selectAll('text').attr('transform','rotate(-30)').style('text-anchor','end');
+  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d=>d+'%'));
+  g.selectAll('rect').data(passSeries).join('rect')
+    .attr('x',d=>x(d.date)).attr('y',d=>y(d.pass))
+    .attr('width',x.bandwidth()).attr('height',d=>height-y(d.pass)).attr('fill','#16a34a');
+}
+// ---- table: grouped by Page Type when "All", by URL when a specific type is selected ----
+function renderTable(all, key, selectedType){
+  tableDiv.replaceChildren();
+
+  const latestRows = all[all.length-1]?.rows || [];
+  const prevRows   = all[all.length-2]?.rows || [];
+
+  // helpers
+  const mean = arr => {
+    let s = 0, c = 0;
+    for (const v of arr) if (Number.isFinite(v)) { s += v; c++; }
+    return c ? s / c : NaN;
+  };
+
+  // Round to the display precision FIRST, return a Number
+  const disp = (k, v) => {
+    if (!Number.isFinite(v)) return NaN;
+    const d = (k === 'cls') ? 3 : 1;   // CLS uses 3dp; others 1dp
+    return +v.toFixed(d);
+  };
+
+  // Format a Number for the cell (string)
+  const fmtCell = (k, v) => Number.isFinite(v)
+    ? (k === 'cls' ? v.toFixed(3) : v.toFixed(1))
+    : '—';
+
+  if (selectedType === '__all__') {
+    // ===== GROUP BY PAGE TYPE =====
+    const bucketLatest = new Map(); // pageType -> [values]
+    const bucketPrev   = new Map();
+    const countLatest  = new Map(); // pageType -> count for latest day
+
+    const push = (map, t, val) => { if (!map.has(t)) map.set(t, []); map.get(t).push(val); };
+    const bump = (map, t) => map.set(t, (map.get(t)||0) + 1);
+
+    for (const r of latestRows){
+      const t = (r.pageType && r.pageType.trim()) ? r.pageType.trim() : 'Unknown';
+      push(bucketLatest, t, normForTable(key, r[key])); bump(countLatest, t);
+    }
+    for (const r of prevRows){
+      const t = (r.pageType && r.pageType.trim()) ? r.pageType.trim() : 'Unknown';
+      push(bucketPrev, t, normForTable(key, r[key]));
+    }
+
+    const types = Array.from(new Set([...bucketLatest.keys(), ...bucketPrev.keys()])).sort();
+
+    const html = [
+      '<table><thead><tr>',
+      '<th>Page Type</th><th>Latest (avg)</th><th>Previous (avg)</th><th>Delta</th><th>Count</th>',
+      '</tr></thead><tbody>'
+    ];
+
+    types.forEach(t=>{
+      const lvRaw = mean(bucketLatest.get(t) || []);
+      const pvRaw = mean(bucketPrev.get(t) || []);
+
+      // round first for display, then subtract
+      const lv = disp(key, lvRaw);
+      const pv = disp(key, pvRaw);
+      const delta = (Number.isFinite(lv) && Number.isFinite(pv))
+        ? disp(key, lv - pv)
+        : NaN;
+
+      const cnt = (countLatest.get(t) || 0);
+      html.push(`<tr><td>${t}</td><td>${fmtCell(key, lv)}</td><td>${fmtCell(key, pv)}</td><td>${fmtCell(key, delta)}</td><td>${cnt}</td></tr>`);
+    });
+
+    html.push('</tbody></table>');
+    tableDiv.innerHTML = html.join('');
+
+  } else {
+    // ===== LIST BY URL (within the selected Page Type) =====
+    const filtLatest = latestRows.filter(r => (r.pageType||'').trim() === selectedType);
+    const filtPrev   = prevRows.filter(r => (r.pageType||'').trim() === selectedType);
+
+    const mapLatest = Object.fromEntries(filtLatest.map(r=>[r.url, normForTable(key, r[key])]));
+    const mapPrev   = Object.fromEntries(filtPrev.map(r=>[r.url,   normForTable(key, r[key])]));
+    const urls = Array.from(new Set([...Object.keys(mapLatest), ...Object.keys(mapPrev)])).sort();
+
+    const html = [
+      '<table><thead><tr><th>URL</th><th>Latest</th><th>Previous</th><th>Delta</th></tr></thead><tbody>'
+    ];
+
+    urls.forEach(url=>{
+      // round first for display, then subtract
+      const lv = disp(key, mapLatest[url]);
+      const pv = disp(key, mapPrev[url]);
+      const d  = (Number.isFinite(lv) && Number.isFinite(pv))
+        ? disp(key, lv - pv)
+        : NaN;
+
+      html.push(`<tr><td>${url}</td><td>${fmtCell(key, lv)}</td><td>${fmtCell(key, pv)}</td><td>${fmtCell(key, d)}</td></tr>`);
+    });
+
+    html.push('</tbody></table>');
+    tableDiv.innerHTML = html.join('');
+  }
+}
+
+// ---- main loader (updates only on "Load") ----
+async function loadAndRender(){
+  const from=fromEl.value; const to=toEl.value;
+  if(!from||!to) return alert('Select date range');
+
+  const all = await loadRange(from,to);
+  if(!all.length) return alert('No data loaded');
+
+  // refresh page-type options from data & persist selection
+  populatePageTypeOptions(all);
+  const selType = pageTypeEl.value;
+  lastSelectedPageType = selType;
+
+  // filter rows by page type (All => no filter)
+  const filteredByDay = all.map(d => ({
+    date: d.date,
+    rows: (selType==='__all__') ? d.rows : d.rows.filter(r => r.pageType === selType)
+  }));
+
+  // if no rows for selection, show empty states
+  if(!filteredByDay.some(d=>d.rows.length)){
+    const keyEmpty = metricEl.value;
+    kpiTitle.textContent = labelOf(keyEmpty) + ' — avg';
+    kpiAvg.textContent = '—';
+    kpiRange.textContent = `${all[0].date} → ${all[all.length-1].date}`;
+    kpiDays.textContent = `${all.length} day${all.length>1?'s':''}`;
+    kpiPass.textContent = '—';
+    kpiPassDelta.textContent='—'; kpiPassDelta.className='delta muted';
+    lineDiv.textContent = 'No data for selected page type.';
+    histDiv.textContent = 'No data for selected page type.';
+    passDiv.textContent = 'No data for selected page type.';
+    tableDiv.innerHTML = '';
+    return;
+  }
+
+  const key = metricEl.value;
+  const label = labelOf(key);
+  kpiTitle.textContent = label + ' — avg';
+  kpiRange.textContent = `${filteredByDay[0].date} → ${filteredByDay[filteredByDay.length-1].date}`;
+  kpiDays.textContent = `${filteredByDay.length} day${filteredByDay.length>1?'s':''}`;
+
+  // KPI avg across all filtered rows
+  const avg = dayAverage(filteredByDay.flatMap(d=>d.rows));
+  kpiAvg.textContent = fmt(key, avg[key]);
+
+  // latest pass & delta vs previous
+  const latestPass = passRate(filteredByDay[filteredByDay.length-1].rows, key);
+  kpiPass.textContent = Number.isFinite(latestPass) ? `${latestPass}%` : '—';
+
+  if (filteredByDay.length > 1) {
+    const prevPass = passRate(filteredByDay[filteredByDay.length-2].rows, key);
+
+    if (Number.isFinite(latestPass) && Number.isFinite(prevPass) && prevPass !== 0) {
+      const d = ((latestPass - prevPass) / prevPass) * 100;
+      // kpiPassDelta.textContent = (d >= 0 ? '+' : '') + d.toFixed(1) + '%';
+      kpiPassDelta.textContent = d.toFixed(1) + '%';
+      kpiPassDelta.className = 'delta ' + (d >= 0 ? 'pos' : 'neg');
+    } else {
+      kpiPassDelta.textContent = '—';
+      kpiPassDelta.className = 'delta muted';
+    }
+  } else {
+    kpiPassDelta.textContent = '—';
+    kpiPassDelta.className = 'delta muted';
+  }
+
+  // charts & table
+  const series = filteredByDay.map(d=>({date:d.date,value:dayAverage(d.rows)[key]}));
+  renderLine(series,key);
+
+  renderHist(filteredByDay[filteredByDay.length-1].rows.map(r=>+r[key]).filter(Number.isFinite), key);
+
+  const passSeries = filteredByDay.map(d=>({date:d.date,pass:passRate(d.rows,key)}));
+  renderPassBars(passSeries);
+
+  // ▼▼ only change at call site (pass selected page type) ▼▼
+  renderTable(filteredByDay, key, pageTypeEl.value);
+}
+
+// ---- events (do NOT auto-update on dropdown change; only on Load) ----
+loadBtn.addEventListener('click', loadAndRender);
+// Keep selection persisted when user changes it (but don't render)
+pageTypeEl.addEventListener('change', ()=>{ lastSelectedPageType = pageTypeEl.value; });
+metricEl.addEventListener('change',  ()=>{/* no render; will apply on next Load */});
+</script>
+</body>
+</html>
